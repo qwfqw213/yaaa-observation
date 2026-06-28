@@ -144,31 +144,25 @@
 
 <script>
 /* =========================================================================
-   ⚙️  설정 (CONFIG) — 이 부분만 바꾸면 됩니다
+   설정 (CONFIG) — 이 부분만 바꾸면 됩니다
    ========================================================================= */
 const CONFIG = {
-  // 1) 아래는 화면에 보여줄 관측회 정보 (자유롭게 수정)
   title:   "1차 정기관측회 신청",
   tagline: "페르세우스의 별빛 아래에서",
   date:    "2026년 9월 28일 (토)",
   place:   "윤호네 집",
 
-  // 2) Google Apps Script 배포 후 받은 웹앱 URL 을 여기에 붙여넣기
-  //    (설치안내.md 참고 — 붙여넣기 전까지는 데모 모드로 동작)
   API_URL: "https://script.google.com/macros/s/AKfycbzKblqEmZSMGShChP7gDwFWHiuWtnBwAirCC_R6ke2v-3-nWpdWY9UhU_O_mhsqLJPUAw/exec",
 
-  // 3) 서버(Apps Script)에 연결되지 않은 동안 쓰는 데모용 기본값
-  //    실제 운영시엔 오픈시각/정원은 Code.gs 의 값이 우선합니다.
   demoOpenTime: "2026-09-20T18:00:00+09:00",
-  demoCapacity: 30
+  demoCapacity: 50
 };
 /* ===================== 설정 끝 ===================== */
 
 const $ = id => document.getElementById(id);
-let state = { openTime:null, closeTime:null, capacity:0, count:0, serverNow:0, baseTick:0, isOpen:false };
+let state = { openTime:null, closeTime:null, capacity:0, count:0, serverNow:0, baseTick:0 };
 const usingApi = CONFIG.API_URL && CONFIG.API_URL.startsWith("http");
 
-// 화면 정보 채우기
 $("evtTitle").textContent = CONFIG.title;
 $("evtTagline").textContent = CONFIG.tagline;
 $("evtDate").textContent = CONFIG.date;
@@ -187,13 +181,29 @@ function show(which){
   $(which).classList.remove("hidden");
 }
 function serverNow(){ return state.serverNow + (Date.now() - state.baseTick); }
+function pad(n){ return String(n).padStart(2,"0"); }
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-// 상태 불러오기
+// Apps Script 는 브라우저의 일반 fetch 응답을 막으므로(CORS),
+// 읽기(상태/결과 조회)는 JSONP 로 처리한다. (개인정보는 URL 에 싣지 않음)
+function jsonp(params){
+  return new Promise((resolve,reject)=>{
+    const cb = "cb_" + Math.random().toString(36).slice(2);
+    const s = document.createElement("script");
+    const timer = setTimeout(()=>{ cleanup(); reject(new Error("timeout")); }, 8000);
+    function cleanup(){ try{ delete window[cb]; }catch(e){} if(s.parentNode) s.parentNode.removeChild(s); clearTimeout(timer); }
+    window[cb] = (data)=>{ cleanup(); resolve(data); };
+    const q = Object.keys(params).map(k=>encodeURIComponent(k)+"="+encodeURIComponent(params[k])).join("&");
+    s.src = CONFIG.API_URL + "?" + q + "&callback=" + cb + "&t=" + Date.now();
+    s.onerror = ()=>{ cleanup(); reject(new Error("network")); };
+    document.head.appendChild(s);
+  });
+}
+
 async function loadStatus(){
   if(usingApi){
     try{
-      const r = await fetch(CONFIG.API_URL + "?action=status&t=" + Date.now());
-      const d = await r.json();
+      const d = await jsonp({ action: "status" });
       state.openTime  = d.openTime;
       state.closeTime = d.closeTime || null;
       state.capacity  = d.capacity;
@@ -201,7 +211,6 @@ async function loadStatus(){
       state.serverNow = d.serverNow;
       state.baseTick  = Date.now();
     }catch(e){
-      // API 실패 → 데모값으로 폴백
       demoState();
     }
   }else{
@@ -219,30 +228,21 @@ function demoState(){
   state.baseTick  = Date.now();
 }
 
-function pad(n){ return String(n).padStart(2,"0"); }
-
 function render(){
   const now = serverNow();
   const remaining = state.capacity - state.count;
-
   if(now < state.openTime){
     show("beforeState");
     $("openAtText").textContent = "오픈: " + fmtKST(state.openTime);
     return;
   }
-  if(state.closeTime && now > state.closeTime){
-    show("closedState"); return;
-  }
-  if(remaining <= 0){
-    show("fullState"); return;
-  }
-  // 오픈 + 자리 있음
+  if(state.closeTime && now > state.closeTime){ show("closedState"); return; }
+  if(remaining <= 0){ show("fullState"); return; }
   show("openState");
   $("capText").textContent = state.count + " / " + state.capacity + "명";
   $("capBar").style.width = Math.min(100, state.count/state.capacity*100) + "%";
 }
 
-// 카운트다운 틱
 setInterval(()=>{
   if(!state.openTime) return;
   const now = serverNow();
@@ -253,20 +253,17 @@ setInterval(()=>{
     const m = Math.floor(diff/60);    const s = diff%60;
     $("cd").textContent=pad(d); $("ch").textContent=pad(h);
     $("cm").textContent=pad(m); $("cs").textContent=pad(s);
-    if(d===0&&h===0&&m===0&&s<=1){ setTimeout(loadStatus, 1200); } // 오픈 순간 새로고침
+    if(d===0&&h===0&&m===0&&s<=1){ setTimeout(loadStatus, 1200); }
   }
 },1000);
 
-// 오픈 전이어도 주기적으로 상태 동기화 (정원/카운트)
 setInterval(()=>{ if(usingApi) loadStatus(); }, 20000);
 
-// 신청 제출
 $("form").addEventListener("submit", async (e)=>{
   e.preventDefault();
   const name = $("name").value.trim();
   const sid  = $("sid").value.trim();
-  const msg  = $("msg");
-  msg.className="msg";
+  $("msg").className="msg";
   if(!name || !sid){ flash("warn","이름과 학번을 모두 입력해 주세요."); return; }
   if(!/^[0-9]{4,15}$/.test(sid)){ flash("warn","학번은 숫자로 입력해 주세요."); return; }
 
@@ -275,7 +272,6 @@ $("form").addEventListener("submit", async (e)=>{
   btn.innerHTML = '<span class="spin"></span> 신청 중…';
 
   if(!usingApi){
-    // 데모 모드: 로컬에서만 처리
     setTimeout(()=>{
       state.count++;
       flash("ok","✅ ["+name+"] 신청 완료! (데모 모드 — 서버 미연결)");
@@ -285,12 +281,25 @@ $("form").addEventListener("submit", async (e)=>{
   }
 
   try{
-    const r = await fetch(CONFIG.API_URL, {
+    // 개인정보(이름·학번)는 URL 이 아니라 요청 본문으로 전송 (no-cors POST)
+    const token = "tk_" + Math.random().toString(36).slice(2) + Date.now();
+    await fetch(CONFIG.API_URL, {
       method:"POST",
+      mode:"no-cors",
       headers:{"Content-Type":"text/plain;charset=utf-8"},
-      body: JSON.stringify({action:"apply", name, sid})
+      body: JSON.stringify({action:"apply", name, sid, token})
     });
-    const d = await r.json();
+    // 처리 결과는 토큰으로 조회 (JSONP, 개인정보 미포함)
+    let d = null;
+    for(let i=0;i<12;i++){
+      await sleep(700);
+      try{
+        const res = await jsonp({ action:"result", token });
+        if(res && res.status && res.status!=="pending"){ d = res; break; }
+      }catch(e){}
+    }
+    if(!d){ throw new Error("no-result"); }
+
     btn.innerHTML = old;
     if(d.status==="ok"){
       flash("ok","✅ "+name+"님, 신청이 완료되었습니다! ("+d.count+"/"+d.capacity+")");
@@ -302,7 +311,7 @@ $("form").addEventListener("submit", async (e)=>{
     }else if(d.status==="full"){
       flash("bad","아쉽지만 정원이 모두 찼습니다."); setTimeout(()=>show("fullState"),1200);
     }else if(d.status==="notopen"){
-      flash("warn","아직 신청 시작 전입니다."); loadStatus();
+      flash("warn","아직 신청 시작 전입니다."); btn.disabled=false; loadStatus();
     }else if(d.status==="closed"){
       flash("bad","신청이 종료되었습니다."); setTimeout(()=>show("closedState"),1000);
     }else{
