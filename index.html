@@ -71,6 +71,16 @@
     border-top-color:#08101f;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-3px}
   @keyframes sp{to{transform:rotate(360deg)}}
   a.link{color:var(--accent);text-decoration:none}
+  .board{list-style:none;counter-reset:rk;margin:6px 0 0;padding:0;max-height:340px;overflow-y:auto}
+  .board li{counter-increment:rk;display:flex;align-items:center;gap:10px;padding:9px 4px;
+    border-bottom:1px solid rgba(120,150,220,.12);font-size:15px}
+  .board li:last-child{border-bottom:0}
+  .board li::before{content:counter(rk);flex:none;width:26px;height:26px;border-radius:50%;
+    display:grid;place-items:center;font-size:12px;font-weight:800;color:#08101f;
+    background:linear-gradient(90deg,var(--accent),var(--accent2))}
+  .board li:nth-child(1)::before{background:linear-gradient(90deg,#ffd76e,#ffb03a)}
+  .board li:nth-child(2)::before{background:linear-gradient(90deg,#dfe6f5,#aebbd4)}
+  .board li:nth-child(3)::before{background:linear-gradient(90deg,#e0a877,#c07d45)}
 </style>
 </head>
 <body>
@@ -115,6 +125,7 @@
         <span class="val" id="capText">- / -</span>
       </div>
       <div class="bar"><i id="capBar"></i></div>
+      <p class="hint" id="prepNote" style="display:none;margin-top:12px"></p>
 
       <form id="form" autocomplete="off">
         <label for="name">이름</label>
@@ -139,7 +150,16 @@
     </div>
   </div>
 
-  <p class="hint">문의는 동아리 운영진에게 연락해 주세요.</p>
+  <!-- 신청자 리더보드 (이름만) -->
+  <div class="card" id="boardCard" style="display:none">
+    <div class="cap">
+      <span class="label">🏅 신청자 명단</span>
+      <span class="val" id="boardCount">-</span>
+    </div>
+    <ol class="board" id="boardList"></ol>
+  </div>
+
+  <p class="hint" id="contactText">-</p>
 </div>
 
 <script>
@@ -149,12 +169,13 @@
 const CONFIG = {
   title:   "1차 정기관측회 신청",
   tagline: "페르세우스의 별빛 아래에서",
-  date:    "2026년 9월 28일 (토)",
-  place:   "윤호네 집",
+  date:    "2026년 9월 19일(토)~20일(일) 1박 2일",
+  place:   "파주 축제 펜션",
+  contact: "관측부장 이윤호 010-8323-8952",
 
   API_URL: "https://script.google.com/macros/s/AKfycbzKblqEmZSMGShChP7gDwFWHiuWtnBwAirCC_R6ke2v-3-nWpdWY9UhU_O_mhsqLJPUAw/exec",
 
-  demoOpenTime: "2026-09-20T18:00:00+09:00",
+  demoOpenTime: "2026-09-07T18:00:00+09:00",
   demoCapacity: 50
 };
 /* ===================== 설정 끝 ===================== */
@@ -167,6 +188,7 @@ $("evtTitle").textContent = CONFIG.title;
 $("evtTagline").textContent = CONFIG.tagline;
 $("evtDate").textContent = CONFIG.date;
 $("evtPlace").textContent = CONFIG.place;
+$("contactText").textContent = "문의: " + CONFIG.contact;
 document.title = CONFIG.title;
 
 function fmtKST(ms){
@@ -175,7 +197,11 @@ function fmtKST(ms){
       month:"long",day:"numeric",hour:"2-digit",minute:"2-digit",weekday:"short"});
   }catch(e){ return new Date(ms).toLocaleString("ko-KR"); }
 }
+const PREP_LEAD_MS = 60000; // 신청 시작 1분 전부터 정보 미리 입력 가능
+let currentShown = null;
 function show(which){
+  if(currentShown === which) return;   // 같은 화면이면 다시 그리지 않음 (입력 중 포커스 유지)
+  currentShown = which;
   ["loadingState","beforeState","openState","fullState","closedState"]
     .forEach(s=>$(s).classList.add("hidden"));
   $(which).classList.remove("hidden");
@@ -219,6 +245,27 @@ async function loadStatus(){
   $("evtCap").textContent = state.capacity + "명";
   render();
 }
+// 리더보드 (이름만) 불러오기
+let boardBusy = false;
+async function loadBoard(){
+  if(!usingApi || boardBusy) return;
+  boardBusy = true;
+  try{
+    const d = await jsonp({ action:"list" });
+    const names = (d && d.names) || [];
+    const ol = $("boardList");
+    ol.innerHTML = "";
+    names.forEach(n=>{
+      const li = document.createElement("li");
+      li.textContent = n;              // 이름만 표시
+      ol.appendChild(li);
+    });
+    $("boardCount").textContent = names.length + "명";
+    $("boardCard").style.display = names.length ? "block" : "none";
+  }catch(e){ /* 실패 시 조용히 무시 */ }
+  finally{ boardBusy = false; }
+}
+
 function demoState(){
   state.openTime  = new Date(CONFIG.demoOpenTime).getTime();
   state.closeTime = null;
@@ -231,16 +278,34 @@ function demoState(){
 function render(){
   const now = serverNow();
   const remaining = state.capacity - state.count;
-  if(now < state.openTime){
+  if(now < state.openTime - PREP_LEAD_MS){
     show("beforeState");
     $("openAtText").textContent = "오픈: " + fmtKST(state.openTime);
     return;
   }
-  if(state.closeTime && now > state.closeTime){ show("closedState"); return; }
-  if(remaining <= 0){ show("fullState"); return; }
+  if(state.closeTime && now > state.closeTime){ show("closedState"); loadBoard(); return; }
+  if(remaining <= 0){ show("fullState"); loadBoard(); return; }
   show("openState");
   $("capText").textContent = state.count + " / " + state.capacity + "명";
   $("capBar").style.width = Math.min(100, state.count/state.capacity*100) + "%";
+  applyPrepState(now);
+}
+
+// 오픈 1분 전 구간: 입력은 가능하되 신청 버튼은 잠금
+function applyPrepState(now){
+  const btn = $("submitBtn"), note = $("prepNote");
+  if(now < state.openTime){
+    const left = Math.max(0, Math.ceil((state.openTime - now)/1000));
+    btn.disabled = true;
+    btn.textContent = left + "초 후 신청 시작";
+    note.style.display = "block";
+    note.textContent = "지금 이름과 학번을 미리 입력해 두세요. 시작되면 바로 신청됩니다.";
+  }else if(!btn.dataset.opened){
+    btn.dataset.opened = "1";
+    btn.disabled = false;
+    btn.textContent = "신청하기";
+    note.style.display = "none";
+  }
 }
 
 setInterval(()=>{
@@ -255,6 +320,7 @@ setInterval(()=>{
     $("cm").textContent=pad(m); $("cs").textContent=pad(s);
     if(d===0&&h===0&&m===0&&s<=1){ setTimeout(loadStatus, 1200); }
   }
+  render(); // 1분 전 입력구간 → 오픈 전환을 매초 반영
 },1000);
 
 setInterval(()=>{ if(usingApi) loadStatus(); }, 20000);
@@ -305,6 +371,7 @@ $("form").addEventListener("submit", async (e)=>{
       flash("ok","✅ "+name+"님, 신청이 완료되었습니다! ("+d.count+"/"+d.capacity+")");
       state.count=d.count; state.capacity=d.capacity;
       $("form").reset(); render();
+      loadBoard(); // 신청 완료 → 명단 표시
       if(d.count>=d.capacity){ setTimeout(()=>show("fullState"),1500); }
     }else if(d.status==="duplicate"){
       flash("warn","이미 신청된 학번입니다. (중복 신청 불가)"); btn.disabled=false;
